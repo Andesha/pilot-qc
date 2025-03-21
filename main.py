@@ -155,9 +155,13 @@ def plot_all_ic_topos(ll_state):
             if not lines[1].strip():
                 return xmin, xmax, set()
             
-            # Remove set formatting and split into components from second line
-            components = lines[1].strip('{}').replace("'", "").split(', ')
-            return xmin, xmax, {comp for comp in components if comp}
+            # Clean up the set string and parse components
+            set_str = lines[1].strip()
+            # Remove the outer set brackets and any newlines
+            set_str = set_str.strip('{}').strip()
+            # Split by comma and clean up each component
+            components = [comp.strip().strip("'") for comp in set_str.split(',') if comp.strip()]
+            return xmin, xmax, set(components)
 
     # Create new figure with subplots
     n_cols = 5
@@ -208,16 +212,20 @@ def plot_all_ic_topos(ll_state):
             return
             
         xmin, xmax, bad_components = get_bad_components()
-        
+        snap_state = ll_state.raw.copy().crop(tmin=xmin, tmax=xmax).load_data()
+        ll_state.ica2.exclude = list(bad_components)
+        ll_state.ica2.apply(snap_state)
+        snap_state.set_eeg_reference('average')
+
         # Create a new figure for scalp plot with increased height
         plt.figure(figsize=(12, 20))
         
         # Extract data for the time window
-        data, times = ll_state.raw[:, int(xmin * ll_state.raw.info['sfreq']):int(xmax * ll_state.raw.info['sfreq'])]
+        data, times = snap_state[:, int(xmin * ll_state.raw.info['sfreq']):int(xmax * ll_state.raw.info['sfreq'])]
         
         # Normalize each channel and apply large offset
         n_channels = data.shape[0]
-        for i, ch_name in enumerate(ll_state.raw.ch_names):
+        for i, ch_name in enumerate(snap_state.raw.ch_names):
             # Normalize the data to [-1, 1] range
             channel_data = data[i]
             normalized_data = channel_data / (np.max(np.abs(channel_data)) + 1e-6)
