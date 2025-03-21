@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import threading
 import time
 from PyQt5.QtCore import QTimer, QObject, pyqtSignal
+import numpy as np
 
 mne.viz.set_browser_backend('qt')
 
@@ -134,73 +135,108 @@ def plot_all_ic_topos(ll_state):
     
     local_reject_file = Path('.local_reject')
     with open(local_reject_file, 'w') as f:
-        f.write(str(bad_components))
+        f.write("0,0\n")  # First line is time range
+        f.write(str(bad_components))  # Second line is bad components
     
-    # Function to read bad components from file
+    # Function to read bad components and time range from file
     def get_bad_components():
         with open(local_reject_file, 'r') as f:
-            content = f.read().strip()
-            if not content:
-                return set()
-            # Remove set formatting and split into components
-            components = content.strip('{}').replace("'", "").split(', ')
-            return {comp for comp in components if comp}
-
-    # Function to update plot
-    def update_plot():
-        nonlocal fig
-        plt.close(fig)  # Close existing figure
-        
-        # Create new figure with subplots
-        n_cols = 5
-        n_rows = (n_components + 4) // 5
-        
-        fig = ll_state.ica2.plot_components(
-            picks=range(n_components),
-            ch_type='eeg',
-            title='IC Topographies',
-            show=False,
-            ncols=n_cols,
-            nrows=n_rows,
-        )
-        
-        fig.set_size_inches(15, 3 * n_rows)
-        
-        # Get current bad components and convert to indices
-        bad_components = get_bad_components()
-        bad_indices = {int(comp.replace('ICA', '')) for comp in bad_components}
-        
-        # Update component labels
-        if hasattr(ll_state, 'flags') and 'ic' in ll_state.flags:
-            ic_flags = ll_state.flags['ic']
+            lines = f.readlines()
+            if len(lines) < 2:
+                return 0, 0, set()
             
-            for idx in range(n_components):
-                ax = fig.axes[idx]
-                ax.set_title('')
+            # Get time range from first line
+            try:
+                xmin, xmax = map(float, lines[0].strip().split(','))
+            except:
+                xmin, xmax = 0, 0
                 
-                if idx in ic_flags.index:
-                    ic_type = ic_flags.loc[idx, 'ic_type']
-                    confidence = ic_flags.loc[idx, 'confidence']
-                    # Check if this component is in the bad list
-                    text_color = 'red' if idx in bad_indices else 'black'
-                    ax.text(0.5, -0.1, f'IC{idx}\n{ic_type}\n{confidence:.2f}', 
-                           horizontalalignment='center',
-                           verticalalignment='top',
-                           transform=ax.transAxes,
-                           fontsize=8,
-                           color=text_color)
-        
-        plt.subplots_adjust(bottom=0.1, hspace=0.25, wspace=0.3)
-        fig.canvas.draw_idle()
-        plt.show(block=False)
+            # Get bad components from second line
+            if not lines[1].strip():
+                return xmin, xmax, set()
+            
+            # Remove set formatting and split into components from second line
+            components = lines[1].strip('{}').replace("'", "").split(', ')
+            return xmin, xmax, {comp for comp in components if comp}
 
-    # Create initial figure
-    fig = None
-    update_plot()
+    # Create new figure with subplots
+    n_cols = 5
+    n_rows = (n_components + 4) // 5
     
+    fig = ll_state.ica2.plot_components(
+        picks=range(n_components),
+        ch_type='eeg',
+        title='IC Topographies',
+        show=False,
+        ncols=n_cols,
+        nrows=n_rows,
+    )
+    
+    fig.set_size_inches(15, 3 * n_rows)
+    
+    # Get current bad components and convert to indices
+    _, _, bad_components = get_bad_components()
+    bad_indices = {int(comp.replace('ICA', '')) for comp in bad_components}
+    
+    # Update component labels
+    if hasattr(ll_state, 'flags') and 'ic' in ll_state.flags:
+        ic_flags = ll_state.flags['ic']
+        
+        for idx in range(n_components):
+            ax = fig.axes[idx]
+            ax.set_title('')
+            
+            if idx in ic_flags.index:
+                ic_type = ic_flags.loc[idx, 'ic_type']
+                confidence = ic_flags.loc[idx, 'confidence']
+                # Check if this component is in the bad list
+                text_color = 'red' if idx in bad_indices else 'black'
+                ax.text(0.5, -0.1, f'IC{idx}\n{ic_type}\n{confidence:.2f}', 
+                        horizontalalignment='center',
+                        verticalalignment='top',
+                        transform=ax.transAxes,
+                        fontsize=8,
+                        color=text_color)
+    
+    plt.subplots_adjust(bottom=0.1, hspace=0.25, wspace=0.3)
+    fig.canvas.draw_idle()
+    plt.show(block=False)
+
+    def foo():
+        if not hasattr(foo, '_called'):
+            foo._called = True
+            return
+            
+        xmin, xmax, bad_components = get_bad_components()
+        
+        # Create a new figure for scalp plot with increased height
+        plt.figure(figsize=(12, 20))
+        
+        # Extract data for the time window
+        data, times = ll_state.raw[:, int(xmin * ll_state.raw.info['sfreq']):int(xmax * ll_state.raw.info['sfreq'])]
+        
+        # Normalize each channel and apply large offset
+        n_channels = data.shape[0]
+        for i, ch_name in enumerate(ll_state.raw.ch_names):
+            # Normalize the data to [-1, 1] range
+            channel_data = data[i]
+            normalized_data = channel_data / (np.max(np.abs(channel_data)) + 1e-6)
+            # Apply large offset between channels
+            plt.plot(times, normalized_data + (n_channels - i) * 3, label=ch_name, linewidth=0.8)
+        
+        plt.xlabel('Time (s)')
+        plt.ylabel('Channels')
+        plt.title('Scalp Data Snapshot')
+        plt.grid(True)
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.tight_layout()
+        plt.show()
+        
+        return
+
     # Set up Qt-based file monitoring
     watcher = FileWatcher(local_reject_file)
-    watcher.file_changed.connect(update_plot)
+    watcher.file_changed.connect(foo)
     
     # Create timer in the main Qt thread
     timer = QTimer()
