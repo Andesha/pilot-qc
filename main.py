@@ -227,26 +227,38 @@ def plot_all_ic_topos(ll_state):
         ll_state.ica2.apply(snap_state)
         snap_state.set_eeg_reference('average')
 
-        # Create a new figure for scalp plot with increased height
-        plt.figure(figsize=(12, 20))
+        # Create a new figure with 2 subplots
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 20))
         
         # Extract data for the time window
         data, times = snap_state[:, int(xmin * ll_state.raw.info['sfreq']):int(xmax * ll_state.raw.info['sfreq'])]
         
-        # Normalize each channel and apply large offset
+        # Plot original data in first subplot
         n_channels = data.shape[0]
         for i, ch_name in enumerate(snap_state.ch_names):
-            # Normalize the data to [-1, 1] range
             channel_data = data[i]
             normalized_data = channel_data / (np.max(np.abs(channel_data)) + 1e-6)
-            # Apply large offset between channels
-            plt.plot(times, normalized_data + (n_channels - i) * 3, label=ch_name, linewidth=0.8)
+            ax1.plot(times, normalized_data + (n_channels - i) * 3, label=ch_name, linewidth=0.8)
         
-        plt.xlabel('Time (s)')
-        plt.ylabel('Channels')
-        plt.title('Scalp Data Snapshot')
-        plt.grid(True)
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        ax1.set_xlabel('Time (s)')
+        ax1.set_ylabel('Channels')
+        ax1.set_title('Scalp Data Snapshot')
+        ax1.grid(True)
+        ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+        # Plot raw data in second subplot
+        raw_data, raw_times = ll_state.raw[:, int(xmin * ll_state.raw.info['sfreq']):int(xmax * ll_state.raw.info['sfreq'])]
+        for i, ch_name in enumerate(ll_state.raw.ch_names):
+            channel_data = raw_data[i]
+            normalized_data = channel_data / (np.max(np.abs(channel_data)) + 1e-6)
+            ax2.plot(raw_times, normalized_data + (n_channels - i) * 3, label=ch_name, linewidth=0.8)
+        
+        ax2.set_xlabel('Time (s)')
+        ax2.set_ylabel('Channels')
+        ax2.set_title('Raw EEG Data')
+        ax2.grid(True)
+        ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
         plt.tight_layout()
         plt.show()
         
