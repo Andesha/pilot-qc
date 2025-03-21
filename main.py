@@ -3,6 +3,9 @@ import mne
 from pathlib import Path
 import pylossless as ll
 import matplotlib.pyplot as plt
+import threading
+import time
+from PyQt5.QtCore import QTimer, QObject, pyqtSignal
 
 mne.viz.set_browser_backend('qt')
 
@@ -95,70 +98,129 @@ def load_lossless_derivative(edf_path, do_clean=True):
 
 def plot_all_ic_topos(ll_state):
     """
-    Plot topographical maps for all Independent Components (ICs) from a Lossless state.
+    Plot topographical maps for all ICs from a Lossless state.
+    Creates and monitors a .local_reject file for bad components.
     Clicking on any IC will open it in a new figure window.
     Text will be shown in red for components marked as artifacts.
-    
-    Parameters:
-    -----------
-    ll_state : ll.LosslessPipeline
-        The loaded Lossless derivative state containing ICA information
     """
+    from PyQt5.QtCore import QTimer, QObject, pyqtSignal
+    
+    class FileWatcher(QObject):
+        file_changed = pyqtSignal()
+        
+        def __init__(self, file_path):
+            super().__init__()
+            self.file_path = file_path
+            self.last_modified = file_path.stat().st_mtime
+            
+        def check_file(self):
+            try:
+                current_modified = self.file_path.stat().st_mtime
+                if current_modified > self.last_modified:
+                    self.last_modified = current_modified
+                    self.file_changed.emit()
+            except Exception as e:
+                print(f"Error monitoring file: {e}")
+
     # Get the number of ICs
     n_components = ll_state.ica2.n_components_
     
-    # Calculate figure size to make plots larger
-    n_cols = 5
-    n_rows = (n_components + 4) // 5  # 5 components per row, rounded up
-    
-    # Create a figure with subplots arranged in a grid
-    fig = ll_state.ica2.plot_components(
-        picks=range(n_components),
-        ch_type='eeg',
-        title='IC Topographies',
-        show=False,
-        ncols=n_cols,
-        nrows=n_rows,
-    )
-    
-    # Resize the figure after creation
-    fig.set_size_inches(15, 3 * n_rows)
-    
-    # Add IC type labels and confidence if available
+    # Create initial file with known bad components
+    bad_components = set()
     if hasattr(ll_state, 'flags') and 'ic' in ll_state.flags:
         ic_flags = ll_state.flags['ic']
         artifact_types = ['eog', 'ecg', 'muscle', 'line_noise', 'channel_noise']
+        bad_components = {f'ICA{str(x).zfill(3)}' for x in ic_flags[ic_flags['ic_type'].isin(artifact_types)].index}
+    
+    local_reject_file = Path('.local_reject')
+    with open(local_reject_file, 'w') as f:
+        f.write(str(bad_components))
+    
+    # Function to read bad components from file
+    def get_bad_components():
+        with open(local_reject_file, 'r') as f:
+            content = f.read().strip()
+            if not content:
+                return set()
+            # Remove set formatting and split into components
+            components = content.strip('{}').replace("'", "").split(', ')
+            return {comp for comp in components if comp}
+
+    # Function to update plot
+    def update_plot():
+        nonlocal fig
+        plt.close(fig)  # Close existing figure
         
-        for idx in range(n_components):
-            if idx in ic_flags.index:
-                ic_type = ic_flags.loc[idx, 'ic_type']
-                confidence = ic_flags.loc[idx, 'confidence']
+        # Create new figure with subplots
+        n_cols = 5
+        n_rows = (n_components + 4) // 5
+        
+        fig = ll_state.ica2.plot_components(
+            picks=range(n_components),
+            ch_type='eeg',
+            title='IC Topographies',
+            show=False,
+            ncols=n_cols,
+            nrows=n_rows,
+        )
+        
+        fig.set_size_inches(15, 3 * n_rows)
+        
+        # Get current bad components and convert to indices
+        bad_components = get_bad_components()
+        bad_indices = {int(comp.replace('ICA', '')) for comp in bad_components}
+        
+        # Update component labels
+        if hasattr(ll_state, 'flags') and 'ic' in ll_state.flags:
+            ic_flags = ll_state.flags['ic']
+            
+            for idx in range(n_components):
                 ax = fig.axes[idx]
-                # Clear existing title
                 ax.set_title('')
-                # Set color based on whether component is marked as artifact
-                text_color = 'red' if ic_type in artifact_types else 'black'
-                # Add new title at the bottom with confidence, using smaller font
-                ax.text(0.5, -0.1, f'IC{idx}\n{ic_type}\n{confidence:.2f}', 
-                       horizontalalignment='center',
-                       verticalalignment='top',
-                       transform=ax.transAxes,
-                       fontsize=8,
-                       color=text_color)
+                
+                if idx in ic_flags.index:
+                    ic_type = ic_flags.loc[idx, 'ic_type']
+                    confidence = ic_flags.loc[idx, 'confidence']
+                    # Check if this component is in the bad list
+                    text_color = 'red' if idx in bad_indices else 'black'
+                    ax.text(0.5, -0.1, f'IC{idx}\n{ic_type}\n{confidence:.2f}', 
+                           horizontalalignment='center',
+                           verticalalignment='top',
+                           transform=ax.transAxes,
+                           fontsize=8,
+                           color=text_color)
+        
+        plt.subplots_adjust(bottom=0.1, hspace=0.25, wspace=0.3)
+        fig.canvas.draw_idle()
+        plt.show(block=False)
+
+    # Create initial figure
+    fig = None
+    update_plot()
+    
+    # Set up Qt-based file monitoring
+    watcher = FileWatcher(local_reject_file)
+    watcher.file_changed.connect(update_plot)
+    
+    # Create timer in the main Qt thread
+    timer = QTimer()
+    timer.timeout.connect(watcher.check_file)
+    timer.start(500)  # Check every 500ms
+    
+    # Store timer and watcher as figure properties to prevent garbage collection
+    fig.timer = timer
+    fig.watcher = watcher
     
     # Define click event handler
     def on_click(event):
         if event.inaxes:
-            # Find which subplot was clicked
             ax_idx = fig.axes.index(event.inaxes)
-            if ax_idx < n_components:  # Make sure it's a valid IC
-                # Create new figure with single IC
+            if ax_idx < n_components:
                 new_fig = ll_state.ica2.plot_components(
                     picks=[ax_idx],
                     ch_type='eeg',
                     show=False
                 )
-                # Add title with IC type and confidence if available
                 if hasattr(ll_state, 'flags') and 'ic' in ll_state.flags:
                     if ax_idx in ic_flags.index:
                         ic_type = ic_flags.loc[ax_idx, 'ic_type']
@@ -166,12 +228,7 @@ def plot_all_ic_topos(ll_state):
                         new_fig.suptitle(f'IC{ax_idx} ({ic_type})\nconfidence: {confidence:.2f}')
                 plt.show()
 
-    # Connect the click event to the figure
     fig.canvas.mpl_connect('button_press_event', on_click)
-    
-    # Adjust layout with less vertical space between plots
-    plt.subplots_adjust(bottom=0.1, hspace=0.25, wspace=0.3)
-    plt.show(block=False)
     return fig
 
 def plot_ic_scrollplot(ll_state, picks=None):
