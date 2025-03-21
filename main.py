@@ -209,9 +209,19 @@ def plot_all_ic_topos(ll_state):
     def foo():
         if not hasattr(foo, '_called'):
             foo._called = True
+            foo.bad_components_history = []  # Initialize history list
             return
             
         xmin, xmax, bad_components = get_bad_components()
+        
+        # Add current bad_components to history
+        foo.bad_components_history.append((time.time(), bad_components))
+        
+        # Print history for debugging
+        print("\nBad components history:")
+        for timestamp, components in foo.bad_components_history:
+            print(f"Time: {timestamp:.2f}, Components: {components}")
+        
         snap_state = ll_state.raw.copy().crop(tmin=xmin, tmax=xmax).load_data()
         ll_state.ica2.exclude = list(bad_components)
         ll_state.ica2.apply(snap_state)
@@ -225,7 +235,7 @@ def plot_all_ic_topos(ll_state):
         
         # Normalize each channel and apply large offset
         n_channels = data.shape[0]
-        for i, ch_name in enumerate(snap_state.raw.ch_names):
+        for i, ch_name in enumerate(snap_state.ch_names):
             # Normalize the data to [-1, 1] range
             channel_data = data[i]
             normalized_data = channel_data / (np.max(np.abs(channel_data)) + 1e-6)
