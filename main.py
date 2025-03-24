@@ -206,53 +206,78 @@ def plot_all_ic_topos(ll_state):
     fig.canvas.draw_idle()
     plt.show(block=False)
 
-    def foo():
-        if not hasattr(foo, '_called'):
-            foo._called = True
-            foo.bad_components_history = []  # Initialize history list
+    def plot_scroll_difference():
+        if not hasattr(plot_scroll_difference, '_called'):
+            plot_scroll_difference._called = True
+            plot_scroll_difference.bad_components_history = []  # Initialize history list
             return
             
         xmin, xmax, bad_components = get_bad_components()
         
         # Add current bad_components to history
-        foo.bad_components_history.append((time.time(), bad_components))
+        plot_scroll_difference.bad_components_history.append((time.time(), bad_components))
         
         # Print history for debugging
         print("\nBad components history:")
-        for timestamp, components in foo.bad_components_history:
+        for timestamp, components in plot_scroll_difference.bad_components_history:
             print(f"Time: {timestamp:.2f}, Components: {components}")
         
-        snap_state = ll_state.raw.copy().crop(tmin=xmin, tmax=xmax).load_data()
-        ll_state.ica2.exclude = list(bad_components)
+        # Create a fresh copy of the full raw data each time and load it into memory
+        snap_state = ll_state.raw.copy().load_data()
+        # Apply ICA exclusions
+        ll_state.ica2.exclude = [int(comp.replace('ICA', '')) for comp in bad_components]
         ll_state.ica2.apply(snap_state)
         snap_state.set_eeg_reference('average')
-
+        
+        # Window the data after cleaning
+        snap_state = snap_state.crop(tmin=xmin, tmax=xmax)
+        
         # Create a single figure
         fig, ax = plt.subplots(1, 1, figsize=(12, 10))
         
-        # Extract data for the time window
-        data, times = snap_state[:, int(xmin * ll_state.raw.info['sfreq']):int(xmax * ll_state.raw.info['sfreq'])]
-        raw_data, raw_times = ll_state.raw[:, int(xmin * ll_state.raw.info['sfreq']):int(xmax * ll_state.raw.info['sfreq'])]
+        # Calculate sample points more precisely
+        sfreq = ll_state.raw.info['sfreq']
+        start_idx = int(xmin * sfreq)
+        end_idx = int(xmax * sfreq)
         
-        n_channels = data.shape[0]
+        # Extract data for the time window, ensuring we get the full range
+        data = snap_state.get_data()  # Get all data from the cropped state
+        raw_data = ll_state.raw.get_data(start=start_idx, stop=end_idx)
+        
+        # Create time arrays
+        n_samples_clean = data.shape[1]
+        n_samples_raw = raw_data.shape[1]
+        times = np.linspace(xmin, xmax, n_samples_clean)
+        raw_times = np.linspace(xmin, xmax, n_samples_raw)
+        
+        ch_names = ll_state.raw.ch_names
+        n_channels = len(ch_names)
+        
+        # Create y-axis positions for the channels
+        positions = np.arange(n_channels) * 3
+        positions = positions[::-1]  # Reverse order to match traditional EEG display
         
         # Plot raw data first (transparent)
-        for i, ch_name in enumerate(ll_state.raw.ch_names):
+        for i, ch_name in enumerate(ch_names):
             channel_data = raw_data[i]
             normalized_data = channel_data / (np.max(np.abs(channel_data)) + 1e-6)
-            ax.plot(raw_times, normalized_data + (n_channels - i) * 3, 
+            ax.plot(raw_times, normalized_data + positions[i], 
                    label=ch_name + ' (raw)', 
                    linewidth=0.8,
-                   color='red')
+                   color='#E69F00')  # Seaborn-style orange
         
         # Plot cleaned data on top (opaque)
         for i, ch_name in enumerate(snap_state.ch_names):
             channel_data = data[i]
             normalized_data = channel_data / (np.max(np.abs(channel_data)) + 1e-6)
-            ax.plot(times, normalized_data + (n_channels - i) * 3,
+            ax.plot(times, normalized_data + positions[i],
                    label=ch_name + ' (cleaned)',
                    linewidth=0.8,
-                   color='green')
+                   color='#009E73')  # Seaborn-style green
+        
+        # Set y-axis ticks and labels
+        ax.set_yticks(positions)
+        ax.set_yticklabels(ch_names)
         
         ax.set_xlabel('Time (s)')
         ax.set_ylabel('Channels')
@@ -266,7 +291,7 @@ def plot_all_ic_topos(ll_state):
 
     # Set up Qt-based file monitoring
     watcher = FileWatcher(local_reject_file)
-    watcher.file_changed.connect(foo)
+    watcher.file_changed.connect(plot_scroll_difference)
     
     # Create timer in the main Qt thread
     timer = QTimer()
@@ -323,8 +348,13 @@ if __name__ == "__main__":
     edf_path = "subjects/sub-hcS01/ses-S1/eeg/sub-hcS01_ses-S1_task-pyl_eeg.edf"
     ll_state = load_lossless_derivative(edf_path, do_clean=False)
     
+    # Track time before plotting
+    start_time = time.time()
+    
     # Plot both visualizations
     fig = plot_all_ic_topos(ll_state)
     plot_ic_scrollplot(ll_state)
     
-    print('Done')
+    # Calculate and print elapsed time
+    end_time = time.time()
+    print(f"Visualization time: {end_time - start_time:.2f} seconds")
